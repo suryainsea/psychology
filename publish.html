@@ -1,0 +1,218 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from 'firebase/firestore';
+
+// Firebase configuration and app ID are provided by the environment
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+function App() {
+  const [researchPapers, setResearchPapers] = useState([]);
+  const [newTitle, setNewTitle] = useState('');
+  const [newAbstract, setNewAbstract] = useState('');
+  const [newContent, setNewContent] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [message, setMessage] = useState(''); // For user messages
+
+  useEffect(() => {
+    const setupFirebase = async () => {
+      try {
+        if (initialAuthToken) {
+          await signInWithCustomToken(auth, initialAuthToken);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Firebase authentication error:", error);
+        setMessage("प्रमाणीकरण में त्रुटि। कृपया पुनः प्रयास करें।");
+      }
+    };
+
+    setupFirebase();
+
+    // Listen for authentication state changes
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setUserId(user.uid);
+      } else {
+        setUserId(crypto.randomUUID()); // Fallback for unauthenticated users
+      }
+      setIsAuthReady(true);
+      setLoading(false);
+    });
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthReady || !userId) return;
+
+    // Define the collection path for public data
+    const researchCollectionRef = collection(db, `artifacts/${appId}/public/data/research_papers`);
+    // Note: orderBy is commented out as per instructions to avoid index issues.
+    // Data will be sorted in memory.
+    const q = query(researchCollectionRef);
+
+    const unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
+      const papers = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      // Sort papers by timestamp in descending order if timestamp exists
+      papers.sort((a, b) => (b.timestamp?.toDate() || 0) - (a.timestamp?.toDate() || 0));
+      setResearchPapers(papers);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching research papers:", error);
+      setMessage("शोध पत्र लाने में त्रुटि।");
+      setLoading(false);
+    });
+
+    return () => unsubscribeSnapshot();
+  }, [isAuthReady, userId]); // Depend on auth readiness and userId
+
+  const handleSubmitResearch = async (e) => {
+    e.preventDefault();
+    if (!newTitle || !newAbstract || !newContent) {
+      setMessage("सभी फ़ील्ड भरना आवश्यक है।");
+      return;
+    }
+
+    if (!isAuthReady || !userId) {
+      setMessage("प्रमाणीकरण अभी तैयार नहीं है। कृपया प्रतीक्षा करें।");
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+    try {
+      await addDoc(collection(db, `artifacts/${appId}/public/data/research_papers`), {
+        title: newTitle,
+        abstract: newAbstract,
+        content: newContent,
+        authorId: userId, // Associate research with the current user ID
+        timestamp: serverTimestamp(), // Add a timestamp for ordering
+      });
+      setNewTitle('');
+      setNewAbstract('');
+      setNewContent('');
+      setMessage("शोध पत्र सफलतापूर्वक प्रकाशित किया गया!");
+    } catch (error) {
+      console.error("Error adding document: ", error);
+      setMessage("शोध पत्र प्रकाशित करने में त्रुटि।");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-100">
+        <div className="text-lg font-semibold text-gray-700">लोड हो रहा है...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-100 p-4 font-sans flex flex-col items-center">
+      <div className="max-w-4xl w-full bg-white shadow-lg rounded-xl p-6 mb-8">
+        <h1 className="text-4xl font-extrabold text-center text-indigo-700 mb-6">मनोविज्ञान अनुसंधान प्रकाशन</h1>
+        <p className="text-center text-gray-600 mb-4">
+          आपका User ID: <span className="font-mono text-sm bg-gray-200 px-2 py-1 rounded">{userId}</span>
+        </p>
+
+        {message && (
+          <div className="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded relative mb-4" role="alert">
+            <span className="block sm:inline">{message}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmitResearch} className="space-y-4">
+          <div>
+            <label htmlFor="title" className="block text-lg font-medium text-gray-700 mb-1">शीर्षक:</label>
+            <input
+              type="text"
+              id="title"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+              placeholder="अपने शोध का शीर्षक दर्ज करें"
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="abstract" className="block text-lg font-medium text-gray-700 mb-1">सार (Abstract):</label>
+            <textarea
+              id="abstract"
+              value={newAbstract}
+              onChange={(e) => setNewAbstract(e.target.value)}
+              rows="4"
+              className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+              placeholder="अपने शोध का संक्षिप्त सार लिखें"
+              required
+            ></textarea>
+          </div>
+          <div>
+            <label htmlFor="content" className="block text-lg font-medium text-gray-700 mb-1">शोध सामग्री:</label>
+            <textarea
+              id="content"
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              rows="8"
+              className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-base"
+              placeholder="अपने शोध की पूरी सामग्री यहाँ लिखें"
+              required
+            ></textarea>
+          </div>
+          <button
+            type="submit"
+            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-lg font-semibold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out"
+            disabled={loading}
+          >
+            {loading ? 'प्रकाशित हो रहा है...' : 'शोध प्रकाशित करें'}
+          </button>
+        </form>
+      </div>
+
+      <div className="max-w-4xl w-full bg-white shadow-lg rounded-xl p-6">
+        <h2 className="text-3xl font-bold text-center text-indigo-700 mb-6">प्रकाशित शोध पत्र</h2>
+        {researchPapers.length === 0 ? (
+          <p className="text-center text-gray-500">अभी तक कोई शोध पत्र प्रकाशित नहीं हुआ है।</p>
+        ) : (
+          <div className="space-y-6">
+            {researchPapers.map((paper) => (
+              <div key={paper.id} className="border border-gray-200 rounded-lg p-5 shadow-sm bg-gray-50">
+                <h3 className="text-2xl font-semibold text-indigo-600 mb-2">{paper.title}</h3>
+                <p className="text-sm text-gray-500 mb-2">
+                  <span className="font-medium">लेखक ID:</span> {paper.authorId}
+                  {paper.timestamp && (
+                    <span className="ml-4">
+                      <span className="font-medium">प्रकाशित:</span> {new Date(paper.timestamp.toDate()).toLocaleString()}
+                    </span>
+                  )}
+                </p>
+                <p className="text-gray-700 text-base mb-3 leading-relaxed">
+                  <span className="font-medium">सार:</span> {paper.abstract}
+                </p>
+                <p className="text-gray-800 text-base leading-relaxed whitespace-pre-wrap">
+                  {paper.content}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
